@@ -1,32 +1,28 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from matplotlib import pyplot as plt
-import matplotlib.colors as mcolors
-from torch.nn import init, Sequential
+from torch.nn import init
 import numpy as np
-import kornia
+
 from graph_blocks import GraphRefinementStack
 from pid_gate import pid
-from text_guidance import CLIPTextEncoder,TextGuidanceAdapter
+from text_guidance import CLIPTextEncoder, TextGuidanceAdapter
 
 
 class BasicConv(nn.Module):
-    """
-    将卷积层、归一化层、激活层打包好
-    """
+
     def __init__(self, in_channel, out_channel, kernel_size, stride, bias=True, norm=False, relu=True, transpose=False):
         super(BasicConv, self).__init__()
         if bias and norm:
             bias = False
 
-        padding = kernel_size // 2  #在stride默认为1的情况下，保证是same卷积
+        padding = kernel_size // 2  # 在stride默认为1的情况下，保证是same卷积
         layers = list()
         if transpose:
             # padding = kernel_size // 2 -1
             padding = kernel_size // 2
-            layers.append(nn.ConvTranspose2d(in_channel, out_channel, kernel_size, padding=padding, stride=stride, bias=bias))
+            layers.append(
+                nn.ConvTranspose2d(in_channel, out_channel, kernel_size, padding=padding, stride=stride, bias=bias))
         else:
             layers.append(
                 nn.Conv2d(in_channel, out_channel, kernel_size, padding=padding, stride=stride, bias=bias))
@@ -39,10 +35,9 @@ class BasicConv(nn.Module):
     def forward(self, x):
         return self.main(x)
 
+
 class ResBlock(nn.Module):
-    """
-    残差块
-    """
+
     def __init__(self, in_channel, out_channel):
         super(ResBlock, self).__init__()
         self.main = nn.Sequential(
@@ -53,22 +48,21 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return self.main(x) + x
 
+
 class DSCResBlock(nn.Module):
     def __init__(self, in_channel, out_channel):
         super(DSCResBlock, self).__init__()
 
         self.main = nn.Sequential(
-            nn.Conv2d(in_channel, out_channel, kernel_size=3, padding=1, groups=in_channel),#深层卷积
+            nn.Conv2d(in_channel, out_channel, kernel_size=3, padding=1, groups=in_channel),  # 深层卷积
             nn.Conv2d(in_channel, out_channel, kernel_size=1)
         )
 
     def forward(self, x):
         return self.main(x) + x
 
+
 class EBlock(nn.Module):
-    """
-    编码器模块：连续堆叠num_res个ResBlock
-    """
     def __init__(self, out_channel, num_res=1):
         super(EBlock, self).__init__()
 
@@ -79,10 +73,9 @@ class EBlock(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-class DBlock(nn.Module):
-    """
-    解码器模块：连续堆叠num_res个ResBlock
-    """
+
+class DBlock(nn.Module)
+
     def __init__(self, channel, num_res=1):
         super(DBlock, self).__init__()
 
@@ -92,10 +85,9 @@ class DBlock(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
+
 class DownSample(nn.Module):
-    """
-    下采样：将尺度缩小为原来的1/2并改变通道数
-    """
+
     def __init__(self, in_channels, out_channels):
         super(DownSample, self).__init__()
         self.down = nn.Sequential(nn.Upsample(scale_factor=0.5, mode='bilinear', align_corners=False),
@@ -104,6 +96,7 @@ class DownSample(nn.Module):
     def forward(self, x):
         x = self.down(x)
         return x
+
 
 class UpSample(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -115,10 +108,9 @@ class UpSample(nn.Module):
         x = self.up(x)
         return x
 
+
 class Encoder(nn.Module):
-    """
-    编码器
-    """
+
     def __init__(self, num_res=1):
         super(Encoder, self).__init__()
         base_channel = 32
@@ -155,31 +147,30 @@ class Encoder(nn.Module):
         # 最后输出尺寸为b,32,320,320 ; b,64,160,160 ; b,128,80,80
         return en_outputs
 
+
 class Decoder(nn.Module):
-    """
-    解码器
-    """
-    def __init__(self, num_res=1, is_seg = False, num_classes=6):
+
+    def __init__(self, num_res=1, is_seg=False, num_classes=6):
         super(Decoder, self).__init__()
         base_channel = 32
         self.is_seg = is_seg
         self.num_classes = num_classes
         self.Decoder = nn.ModuleList([
-            DBlock(base_channel * 4, num_res), #通道128
-            DBlock(base_channel * 2, num_res), #通道64
-            DBlock(base_channel, num_res)      #通道32
+            DBlock(base_channel * 4, num_res),  # 通道128
+            DBlock(base_channel * 2, num_res),  # 通道64
+            DBlock(base_channel, num_res)  # 通道32
         ])
 
         self.feat_extract = nn.ModuleList([
             BasicConv(base_channel * 4, base_channel * 2, kernel_size=3, relu=True, stride=1, transpose=True),
             BasicConv(base_channel * 2, base_channel, kernel_size=3, relu=True, stride=1, transpose=True),
-            BasicConv(base_channel, 1, kernel_size=3, relu=False, stride=1) #融合结果
+            BasicConv(base_channel, 1, kernel_size=3, relu=False, stride=1)  # 融合结果
         ])
-        self.up32 = UpSample(base_channel * 2,base_channel * 2)
-        self.up21 = UpSample(base_channel,base_channel)
+        self.up32 = UpSample(base_channel * 2, base_channel * 2)
+        self.up21 = UpSample(base_channel, base_channel)
 
         self.Skips = nn.ModuleList([
-            Skip(base_channel * 7, base_channel * 1), # [32,64,128]三个通道相加得到224 = 7*32
+            Skip(base_channel * 7, base_channel * 1),  # [32,64,128]三个通道相加得到224 = 7*32
             Skip(base_channel * 7, base_channel * 2)
 
         ])
@@ -188,6 +179,7 @@ class Decoder(nn.Module):
             BasicConv(base_channel * 2, base_channel, kernel_size=1, relu=True, stride=1),
         ])
         self.classifier = nn.Conv2d(base_channel, self.num_classes, kernel_size=1)
+
     def forward(self, inputs):
         # ----------Skip Connection-----------#
         # F.interpolate() = 上采样/下采样函数 ，用于改变特征图的高宽，不改变通道数
@@ -196,14 +188,16 @@ class Decoder(nn.Module):
         inputs_32 = F.interpolate(inputs[2], scale_factor=2)  # b,128,80,80 -> b,128,160,160
         inputs_31 = F.interpolate(inputs_32, scale_factor=2)  # b,128,160,160 -> b,128,320,320
 
-        skip_2 = self.Skips[1](inputs_12, inputs[1], inputs_32)  # [b,32,160,160]+[b,64,160,160]+[b,128,160,160]=[b,32*7,160,160] -> [b,64,160,160]
-        skip_1 = self.Skips[0](inputs[0], inputs_21, inputs_31)  # [b,32,320,320]+[b,64,320,320]+[b,128,320,320]=[b,32*7,320,320] -> [b,32,320,320]
+        skip_2 = self.Skips[1](inputs_12, inputs[1],
+                               inputs_32)  # [b,32,160,160]+[b,64,160,160]+[b,128,160,160]=[b,32*7,160,160] -> [b,64,160,160]
+        skip_1 = self.Skips[0](inputs[0], inputs_21,
+                               inputs_31)  # [b,32,320,320]+[b,64,320,320]+[b,128,320,320]=[b,32*7,320,320] -> [b,32,320,320]
 
         res1 = self.Decoder[0](inputs[2])  # b,128,80,80 -> b,128,80,80  (2个卷积)
         de_3 = self.feat_extract[0](res1)  # b,128,80,80 -> b,64,80,80  (1个卷积)
         x_32 = self.up32(de_3)  # b,64,80,80 -> b,64,160,160  (2倍线性插值+1个卷积)
 
-        cat_2 = torch.cat([x_32, skip_2], dim=1) # [b,64,160,160]+[b,64,160,160]=[b,128,160,160]
+        cat_2 = torch.cat([x_32, skip_2], dim=1)  # [b,64,160,160]+[b,64,160,160]=[b,128,160,160]
         x_2 = self.Convs[0](cat_2)  # b,128,160,160 -> b,64,160,160
         res2 = self.Decoder[1](x_2)  # b,64,160,160 -> b,64,160,160  (2个卷积)
         de_2 = self.feat_extract[1](res2)  # b,64,160,160 -> b,32,160,160  (1个卷积)
@@ -219,17 +213,14 @@ class Decoder(nn.Module):
             de_1 = self.feat_extract[2](res3)
             return de_1
 
+
 class FFBlock(nn.Module):
-    """
-    先让网络”看一眼两路特征“，
-    再学习出“每一条通道改用多少”的权重，给F_vis和F_ir分别做通道注意力加权，然后再融合
-    """
     def __init__(self, in_channels, out_channels):
         super(FFBlock, self).__init__()
         # 结构一样，参数不同，是两个独立分支
         self.conv_1_1 = nn.Sequential(
-            BasicConv(in_channels*2, in_channels*2, kernel_size=3, stride=1, relu=True),
-            BasicConv(in_channels*2, out_channels, kernel_size=3, stride=1, relu=True),
+            BasicConv(in_channels * 2, in_channels * 2, kernel_size=3, stride=1, relu=True),
+            BasicConv(in_channels * 2, out_channels, kernel_size=3, stride=1, relu=True),
             BasicConv(out_channels, out_channels, kernel_size=3, stride=1, relu=True),
         )
         self.conv_1_2 = nn.Sequential(
@@ -242,7 +233,6 @@ class FFBlock(nn.Module):
         self.conv_2 = nn.Sequential(
             BasicConv(in_channels * 2, out_channels, kernel_size=3, stride=1, relu=True),
         )
-
 
     def forward(self, en1, en2):
         cat_1_1 = torch.cat([en1, en2], dim=1)  # b,32,320,320+b,32,320,320 -> b,64,320,320
@@ -259,50 +249,49 @@ class FFBlock(nn.Module):
 
         return fus
 
+
 class SFBlock(nn.Module):
-    """
-    语义特征块，是对应于FTM模块吗？？？
-    """
     def __init__(self):
         super(SFBlock, self).__init__()
         channels = [32, 64, 128]
         self.body_1 = DSCResBlock(channels[0], channels[0])
         self.body_2 = DSCResBlock(channels[1], channels[1])
         self.body_3 = DSCResBlock(channels[2], channels[2])
+
     def forward(self, inp_feats):
         seg_fea_1 = self.body_1(inp_feats[0])
         seg_fea_2 = self.body_2(inp_feats[1])
         seg_fea_3 = self.body_3(inp_feats[2])
         return [seg_fea_1, seg_fea_2, seg_fea_3]
 
+
 class SALayer(nn.Module):
-    """
-    通道注意力模块：学习每一个通道该被“放大”多少或“抑制”多少，
-    使模型更关注重要通道，抑制无关通道。
-    """
+
     def __init__(self, channel, reduction=4, bias=False):
         super(SALayer, self).__init__()
         self.conv_du = nn.Sequential(
-                #瓶颈结构 C-> C/reduction -> C
-                nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=bias),
-                nn.PReLU(),
-                nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=bias),
-                nn.Sigmoid()
+            # 瓶颈结构 C-> C/reduction -> C
+            nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=bias),
+            nn.PReLU(),
+            nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=bias),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
         y = self.conv_du(x)
-        return x*y
+        return x * y
+
 
 class FDBlock(nn.Module):
     """ Feature Decoupled block"""
-    def __init__(self, in_channels = [32, 64, 128]):
+
+    def __init__(self, in_channels=[32, 64, 128]):
         super(FDBlock, self).__init__()
         self.sa_0 = SALayer(in_channels[0], reduction=4, bias=False)
         self.sa_1 = SALayer(in_channels[1], reduction=4, bias=False)
         self.sa_2 = SALayer(in_channels[2], reduction=4, bias=False)
 
-    def forward(self, fus_fea, modality_fea):#B C H W -> 6 128 80 80
+    def forward(self, fus_fea, modality_fea):  # B C H W -> 6 128 80 80
         m_0 = self.sa_0(modality_fea[0])
         x_0 = fus_fea[0] - m_0
 
@@ -314,11 +303,8 @@ class FDBlock(nn.Module):
 
         return [x_0, x_1, x_2]
 
+
 class Skip(nn.Module):
-    """
-    跨层特征融合（skip connection/多尺度特征拼接）
-    将x1、x2、x3三个特征沿通道维度拼接，然后用两个卷积融合
-    """
     def __init__(self, in_channel, out_channel):
         super(Skip, self).__init__()
         self.conv = nn.Sequential(
@@ -330,10 +316,9 @@ class Skip(nn.Module):
         x = torch.cat([x1, x2, x3], dim=1)
         return self.conv(x)
 
+
 class SelfAttention(nn.Module):
-    """
-    把通道维度C划分为h个小头，每个头有C/h维，然后每个头独立算注意力，最后再进行拼接
-    """
+
     def __init__(self, in_channels, h):
         super(SelfAttention, self).__init__()
         assert in_channels % h == 0
@@ -341,17 +326,17 @@ class SelfAttention(nn.Module):
         self.head_channels = in_channels // h
         self.h = h
         # key, query, value projections for all heads
-        self.que_proj = nn.Linear(in_channels, self.h * self.head_channels)  # query projection
-        self.key_proj = nn.Linear(in_channels, self.h * self.head_channels)  # key projection
-        self.val_proj = nn.Linear(in_channels, self.h * self.head_channels)  # value projection
-        self.out_proj = nn.Linear(self.h * self.head_channels, in_channels)  # output projection
+        self.que_proj = nn.Linear(in_channels, self.h * self.head_channels)  
+        self.key_proj = nn.Linear(in_channels, self.h * self.head_channels) 
+        self.val_proj = nn.Linear(in_channels, self.h * self.head_channels)
+        self.out_proj = nn.Linear(self.h * self.head_channels, in_channels)
 
         self.init_weights()
 
     def init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                init.kaiming_normal_(m.weight, mode='fan_out') #为什么mode设置成'fan_out'????
+                init.kaiming_normal_(m.weight, mode='fan_out')  
                 if m.bias is not None:
                     init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
@@ -367,65 +352,13 @@ class SelfAttention(nn.Module):
         q = self.que_proj(x).view(B, N, self.h, self.head_channels).permute(0, 2, 1, 3)  # b n c->b n h c/h->b h n c/h
         k = self.key_proj(x).view(B, N, self.h, self.head_channels).permute(0, 2, 3, 1)  # b c c/h n
         v = self.val_proj(x).view(B, N, self.h, self.head_channels).permute(0, 2, 1, 3)  # b h n c/h
-        att = torch.matmul(q,k) / np.sqrt(self.head_channels)  # b c n n
+        att = torch.matmul(q, k) / np.sqrt(self.head_channels)  # b c n n
         att = torch.softmax(att, -1)
-        out = torch.matmul(att, v).permute(0, 2, 1, 3).contiguous().view(B, N, self.h * self.head_channels)  # b c n c/h -> b n h c/h->b n c
+        out = torch.matmul(att, v).permute(0, 2, 1, 3).contiguous().view(B, N,
+                                                                         self.h * self.head_channels)  # b c n c/h -> b n h c/h->b n c
         out = self.out_proj(out)
 
         return out
-
-class CrossTaskModule(nn.Module):
-    """
-    跨任务交互
-    """
-    def __init__(self, in_channels,high=32, width=32):
-        super(CrossTaskModule, self).__init__()
-        # avgpool
-        self.in_channels = in_channels
-        self.h = 8
-        self.high = high
-        self.width = width
-        self.avgpool = nn.AdaptiveAvgPool2d((self.high, self.width))
-        self.ln_input = nn.LayerNorm(in_channels)
-        self.ln_output = nn.LayerNorm(in_channels)
-        self.bn1 = nn.BatchNorm2d(self.in_channels)
-        self.bn2 = nn.BatchNorm2d(self.in_channels)
-        self.sa = SelfAttention(self.in_channels, self.h)
-        self.mlp1 = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        )
-        self.mlp2 = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        )
-    def forward(self, fus, seg):
-        B, C, H, W = fus.shape
-        # AvgPooling for reduce the dimension due to expensive computation
-        fus_fea = self.avgpool(fus)  # 32 32
-        seg_fea = self.avgpool(seg)  # 32 32
-        fus_fea = self.bn1(fus_fea)
-        seg_fea = self.bn2(seg_fea)
-        fus_flat = fus_fea.view(B, C, -1)  # flatten the feature
-        seg_flat = seg_fea.view(B, C, -1)  # flatten the feature
-
-        mt_flat = torch.cat((fus_flat, seg_flat), dim=2)
-
-        mt_flat = mt_flat.permute(0, 2, 1) #B 2n c
-        mt_flat = self.sa(mt_flat)  #B 2n c
-        mt_flat = self.ln_output(mt_flat)  # B 2n c
-
-        mt_flat = mt_flat.view(B, 2, self.high, self.width, self.in_channels)
-        mt = mt_flat.permute(0, 1, 4, 2, 3)  # dim:(B, 2, C, H, W)
-        fus_out = mt[:, 0, :, :, :].contiguous().view(B, self.in_channels, self.high, self.width)
-        seg_out = mt[:, 1, :, :, :].contiguous().view(B, self.in_channels, self.high, self.width)
-
-        fus_res = self.mlp1(fus_out)
-        seg_res = self.mlp2(seg_out)
-
-        return fus_res, seg_res
 
 class CrossAttention(nn.Module):
 
@@ -461,7 +394,7 @@ class CrossAttention(nn.Module):
     def forward(self, ctf, st):
         B, N = st.shape[:2]
         st_q = self.que_proj(ctf).view(B, N, self.h, self.head_channels).permute(0, 2, 1, 3)  # b n h c/h->b h n c/h
-        ctf_k = self.key_proj(ctf).view(B, N, self.h, self.head_channels).permute(0, 2, 1, 3)   # b n h c/h->b h n c/h
+        ctf_k = self.key_proj(ctf).view(B, N, self.h, self.head_channels).permute(0, 2, 1, 3)  # b n h c/h->b h n c/h
         ctf_v = self.val_proj(ctf).view(B, N, self.h, self.head_channels).permute(0, 2, 3, 1)  # b n h c/h->b h c/h n
         # Self-Attention
         att = torch.matmul(ctf_k, ctf_v) / np.sqrt(self.head_channels)
@@ -469,10 +402,12 @@ class CrossAttention(nn.Module):
         # get attention matrix
         att = torch.softmax(att, -1)
         # output
-        query_res = torch.matmul(att, st_q).permute(0, 2, 1, 3).contiguous().view(B, N, self.h * self.head_channels)  #b h n c/h->b n h c/h-> b n c
+        query_res = torch.matmul(att, st_q).permute(0, 2, 1, 3).contiguous().view(B, N,
+                                                                                  self.h * self.head_channels)  # b h n c/h->b n h c/h-> b n c
         query_res = self.out_proj(query_res)
 
         return query_res
+
 
 class CTQModule(nn.Module):
     def __init__(self, in_channels, high=32, width=32):
@@ -488,9 +423,10 @@ class CTQModule(nn.Module):
         self.ln_input_2 = nn.LayerNorm(self.in_channels)
         self.ln_output = nn.LayerNorm(self.in_channels)
         self.cs = CrossAttention(self.in_channels, self.h)
+
     def forward(self, ctf, st):
         B, C, H, W = st.shape
-        ctf_fea = ctf              # 为什么不用修建尺寸？？
+        ctf_fea = ctf
         # AvgPooling for reduce the dimension due to expensive computation
         st_fea = self.avgpool(st)  # 32 32
 
@@ -507,22 +443,24 @@ class CTQModule(nn.Module):
 
         return query_res
 
+
 class avg_pool_list(nn.Module):
     def __init__(self):
         super().__init__()
         self.avg_pool1 = nn.AdaptiveAvgPool2d((32, 32))
         self.avg_pool2 = nn.AdaptiveAvgPool2d((16, 16))
         self.avg_pool3 = nn.AdaptiveAvgPool2d((8, 8))
-    def forward(self,x:list):
+
+    def forward(self, x: list):
         q = self.avg_pool1(x[0])
         y = self.avg_pool2(x[1])
         z = self.avg_pool3(x[2])
-        return [q,y,z]
+        return [q, y, z]
 
 
-class MMFNet(nn.Module):  # b,1,320,320 -
+class Net(nn.Module):  # b,1,320,320 -
     def __init__(self, num_classes):
-        super(MMFNet, self).__init__()
+        super(Net, self).__init__()
         self.encoder_1 = Encoder()
         self.encoder_2 = Encoder()
         # Text
@@ -530,22 +468,22 @@ class MMFNet(nn.Module):  # b,1,320,320 -
         self.text_adapter_vis = TextGuidanceAdapter()
         self.text_adapter_ir = TextGuidanceAdapter()
 
-        self.pid_1 = pid(128,None)
+        self.pid_1 = pid(128, None)
         self.pid_2 = pid(128, 128)
         self.pid_3 = pid(128, 128)
 
-        self.decoder = Decoder(is_seg = False)
+        self.decoder = Decoder(is_seg=False)
         self.ffb_1 = FFBlock(in_channels=32, out_channels=32)
         self.ffb_2 = FFBlock(in_channels=64, out_channels=64)
         self.ffb_3 = FFBlock(in_channels=128, out_channels=128)
+
         self.sfb = SFBlock()
         self.avg_pool = avg_pool_list()
-        self.graph_seg_1 = GraphRefinementStack(dim=32,patch_size=2,window_size=[5, 7, 9])
-        self.graph_seg_2 = GraphRefinementStack(dim=64,patch_size=2,window_size=[5, 7, 9])
-        self.graph_seg_3 = GraphRefinementStack(dim=128,patch_size=1,window_size=[3, 5, 7])
-        #self.ctf_1 = CrossTaskModule(in_channels=32, high=32, width=32)  # 320
-        #self.ctf_2 = CrossTaskModule(in_channels=64, high=16, width=16)  # 160
-        #self.ctf_3 = CrossTaskModule(in_channels=128, high=8, width=8)  # 80
+
+        self.graph_seg_1 = GraphRefinementStack(dim=32, patch_size=2, window_size=[5, 7, 9])
+        self.graph_seg_2 = GraphRefinementStack(dim=64, patch_size=2, window_size=[5, 7, 9])
+        self.graph_seg_3 = GraphRefinementStack(dim=128, patch_size=1, window_size=[3, 5, 7])
+
         self.ctq_fus_1 = CTQModule(in_channels=32, high=32, width=32)
         self.ctq_seg_1 = CTQModule(in_channels=32, high=32, width=32)
         self.ctq_fus_2 = CTQModule(in_channels=64, high=16, width=16)
@@ -555,8 +493,9 @@ class MMFNet(nn.Module):  # b,1,320,320 -
         self.fdb_1 = FDBlock()
         self.fdb_2 = FDBlock()
         self.seghead = Decoder(is_seg=True, num_classes=num_classes)
-    def forward(self, ir,rgb,text_ir,text_vis):
-        #--------------Encoder for ir and rgb--------------#
+
+    def forward(self, ir, rgb, text_ir, text_vis):
+        # --------------Encoder for ir and rgb--------------#
         ir_feas = self.encoder_1(ir)  # 输出是一个列表，其中3个特征，尺寸分别是：[b,32,320,320] [b,64,160,160] [b,128,80,80]
         rgb_feas = self.encoder_2(rgb)
 
@@ -564,24 +503,18 @@ class MMFNet(nn.Module):  # b,1,320,320 -
         feats_text_vis = self.text_encoder(text_vis)  # list[str]->[b,512]
         feats_text_ir = self.text_encoder(text_ir)  # list[str]->[b,512]
 
-        #feats_text_vis_1 = self.text_adapter_vis(feats_text_vis, 0)  # [b,512]->[b,32]
-        #feats_text_vis_2 = self.text_adapter_vis(feats_text_vis, 1)  # [b,512]->[b,64]
         feats_text_vis_3 = self.text_adapter_vis(feats_text_vis, 2)  # [b,512]->[b,128]
-        #feats_text_ir_1 = self.text_adapter_ir(feats_text_ir, 0)  # [b,512]->[b,32]
-        #feats_text_ir_2 = self.text_adapter_ir(feats_text_ir, 1)  # [b,512]->[b,64]
         feats_text_ir_3 = self.text_adapter_ir(feats_text_ir, 2)  # [b,512]->[b,128]
-        #--------------------------------------------------pid------------------------------------------------------------------
-        #rgb_fea_pid_1, ir_fea_pid_1,stage_1_vis, stage_1_ir = self.pid_1(rgb_feas[0], ir_feas[0], feats_text_vis_1, feats_text_ir_1)
-        #rgb_fea_pid_2, ir_fea_pid_2,stage_2_vis, stage_2_ir = self.pid_2(rgb_feas[1], ir_feas[1], feats_text_vis_2, feats_text_ir_2,stage_1_vis, stage_1_ir)
-        #rgb_fea_pid_3, ir_fea_pid_3,stage_3_vis, stage_3_ir = self.pid_3(rgb_feas[2], ir_feas[2], feats_text_vis_3, feats_text_ir_3,stage_2_vis, stage_2_ir)
-
-        rgb_fea_pid_1, ir_fea_pid_1,stage_1_vis, stage_1_ir = self.pid_1(rgb_feas[2], ir_feas[2], feats_text_vis_3, feats_text_ir_3)
-        rgb_fea_pid_2, ir_fea_pid_2,stage_2_vis, stage_2_ir = self.pid_2(rgb_fea_pid_1, ir_fea_pid_1, feats_text_vis_3, feats_text_ir_3,stage_1_vis, stage_1_ir)
-        rgb_fea_pid_3, ir_fea_pid_3,stage_3_vis, stage_3_ir = self.pid_3(rgb_fea_pid_2, ir_fea_pid_2, feats_text_vis_3, feats_text_ir_3,stage_2_vis, stage_2_ir)
-        #rgb_feas = [rgb_fea_pid_1,rgb_fea_pid_2,rgb_fea_pid_3]
+        # --------------------------------------------------pid------------------------------------------------------------------
+        # x = rgb_feas[2]
+        rgb_fea_pid_1, ir_fea_pid_1, stage_1_vis, stage_1_ir = self.pid_1(rgb_feas[2], ir_feas[2], feats_text_vis_3,
+                                                                          feats_text_ir_3)
+        rgb_fea_pid_2, ir_fea_pid_2, stage_2_vis, stage_2_ir = self.pid_2(rgb_fea_pid_1, ir_fea_pid_1, feats_text_vis_3,
+                                                                          feats_text_ir_3, stage_1_vis, stage_1_ir)
+        rgb_fea_pid_3, ir_fea_pid_3, stage_3_vis, stage_3_ir = self.pid_3(rgb_fea_pid_2, ir_fea_pid_2, feats_text_vis_3,
+                                                                          feats_text_ir_3, stage_2_vis, stage_2_ir)
         rgb_feas[2] = rgb_fea_pid_3
         ir_feas[2] = ir_fea_pid_3
-        #ir_feas =  [ir_fea_pid_1,ir_fea_pid_2,ir_fea_pid_3]
         # ----------Shared Decoder for ir and rgb-----------#
         recon_ir = self.decoder(ir_feas)
         recon_rgb = self.decoder(rgb_feas)
@@ -595,11 +528,8 @@ class MMFNet(nn.Module):  # b,1,320,320 -
         seg_feas = self.sfb(fus_feas)
 
         # ------------Dynamic interaction stage---------------#
-        #ctf_fus_1, ctf_seg_1 = self.ctf_1(fus_feas[0], seg_feas[0])
-        #ctf_fus_2, ctf_seg_2 = self.ctf_2(fus_feas[1], seg_feas[1])
-        #ctf_fus_3, ctf_seg_3 = self.ctf_3(fus_feas[2], seg_feas[2])
         fus_feas_small = self.avg_pool([fus_fea_1, fus_fea_2, fus_fea_3])
-        seg_feas_small = self.avg_pool([seg_feas[0],seg_feas[1],seg_feas[2]])
+        seg_feas_small = self.avg_pool([seg_feas[0], seg_feas[1], seg_feas[2]])
         ctf_fus_1, ctf_seg_1 = self.graph_seg_1(fus_feas_small[0], seg_feas_small[0])
         ctf_fus_2, ctf_seg_2 = self.graph_seg_2(fus_feas_small[1], seg_feas_small[1])
         ctf_fus_3, ctf_seg_3 = self.graph_seg_3(fus_feas_small[2], seg_feas_small[2])
@@ -614,7 +544,7 @@ class MMFNet(nn.Module):  # b,1,320,320 -
 
         query_fus = [query_fus_1, query_fus_2, query_fus_3]
         query_seg = [query_seg_1, query_seg_2, query_seg_3]
-        #------------feature decoupling stage--------------#
+        # ------------feature decoupling stage--------------#
         # from fusion feature decouped ir feature
         dec_ir = self.fdb_1(query_fus, rgb_feas)
         # from fusion feature decouped rgb feature
@@ -625,6 +555,8 @@ class MMFNet(nn.Module):  # b,1,320,320 -
         # -----------seg and fus stage------------------------------#
         seg_res = self.seghead(query_seg)
         fus = self.decoder(query_fus)
+
         return recon_ir, recon_rgb, recon_dec_ir, recon_dec_rgb, seg_res, fus
 
-# Freef
+
+
