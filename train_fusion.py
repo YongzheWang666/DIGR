@@ -8,11 +8,11 @@ from torch.utils.data import DataLoader
 import random
 import time
 import utils
-#from data_RGB_mfnet import get_training_data, get_test_data
-from data_RGB_potsdam import get_training_data, get_test_data
-# from data_RGB_whu import get_training_data, get_test_data
-from warmup_scheduler import GradualWarmupScheduler  # 先用小学习率热身，等模型稳定了再用正常学习率
-from tqdm import tqdm  # for循环显示进度条
+from data_mfnet import get_training_data, get_test_data
+# from data_potsdam import get_training_data, get_test_data
+# from data_whu import get_training_data, get_test_data
+from warmup_scheduler import GradualWarmupScheduler
+from tqdm import tqdm
 import torch.utils.data
 from utils.seg_util import *
 from utils.dice import *
@@ -21,16 +21,12 @@ from utils.MEF_SSIM_loss import th_SSIM_LOSS, Y_Upper
 import logging
 import argparse
 from Evaluator import *
-from model import MMFNet as Net
+from model import Net
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from utils.seg_metrics import SegmentationMetric
 from utils.save_img import save_img
-
-print("A torch.cuda.is_available() =", torch.cuda.is_available())
-print("A torch.cuda.device_count() =", torch.cuda.device_count())
-
 
 def show_img(img):
     """
@@ -78,9 +74,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def evaluation_one(ir_name, vi_name, f_name):
-    """
-    计算评价指标，计算的函数均来自Evaluator中创建的class Evaluator
-    """
     ir = image_read_cv2(ir_name, 'GRAY')
     vi = image_read_cv2(vi_name, 'GRAY')
     fi = image_read_cv2(f_name, 'GRAY')
@@ -93,15 +86,15 @@ def evaluation_one(ir_name, vi_name, f_name):
     return EN, SD, SF, AG, SCD, VIFF
 
 
-EXP_NAME = "potsdam_three_IPID_3"  # 实验名称：baseline/seg_high/seg_low
+EXP_NAME = "mfnet_three_IPID_3"  
 SEG_LOSS_WEIGHT = 1.0  # baseline=1.0；高权重=2.0； 低权重=0.5
 
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # 指定使用哪块GPU运行以下程序‘0’代表第一块，‘1’代表第二块
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0'  
 NUM_EPOCHS = 30
-BATCH_SIZE = 2  # 为什么设置这么小的batch_size
+BATCH_SIZE = 2 
 LR_INITIAL = 2e-5
 LR_MIN = 1e-6
-data = 'potsdam'
+data = 'mfnet'
 
 model_dir = os.path.join('./checkpoints', data, EXP_NAME, 'models')  # './checkpoints/potsdam/models'
 best_model_path = os.path.join(model_dir, 'best_model.pth')
@@ -118,9 +111,7 @@ print("device:", device)
 
 print("B before Net, cuda available =", torch.cuda.is_available())
 
-model = Net(6)  # mfnet ;potsdam是6类；whu是7类
-
-print("C after Net, cuda available =", torch.cuda.is_available())
+model = Net(9)  # mfnet是9类 ;potsdam是6类；whu是7类
 
 model.to(device)
 
